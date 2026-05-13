@@ -74,10 +74,11 @@ app.post('/criar-pedido', async (req, res) => {
         installments: pagamento === 'Crédito' ? (parcelas || 3) : 1
       },
       back_urls: {
-        success: 'https://amdc-loja.netlify.app/sucesso.html',
-        failure: 'https://amdc-loja.netlify.app/erro.html',
-        pending: 'https://amdc-loja.netlify.app/pendente.html'
-      },
+  success: 'https://amdcfc.netlify.app',
+  failure: 'https://amdcfc.netlify.app',
+  pending: 'https://amdcfc.netlify.app'
+},
+   
       auto_return: 'approved',
       statement_descriptor: 'AMDC FUTEBOL',
       external_reference: `AMDC-${numero}-${Date.now()}`,
