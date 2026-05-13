@@ -64,11 +64,11 @@ app.post('/criar-pedido', async (req, res) => {
     // Monta o corpo da preferência
     const body = {
       items,
-      payer: {
-        name: nome,
-        email: email,
-        phone: { number: telefone }
-      },
+      payer: { 
+  area_code: telefone.replace(/\D/g,'').slice(0,2),
+  number: telefone.replace(/\D/g,'').slice(2)
+},
+        
       payment_methods: {
         excluded_payment_types: [],
         installments: pagamento === 'Crédito' ? (parcelas || 3) : 1
