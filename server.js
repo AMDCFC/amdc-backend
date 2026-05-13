@@ -70,9 +70,9 @@ app.post('/criar-pedido', async (req, res) => {
 },
         
       payment_methods: {
-        excluded_payment_types: [],
-        installments: pagamento === 'Crédito' ? (parcelas || 3) : 1
-      },
+  excluded_payment_types: [{ id: 'ticket' }],
+  installments: 12
+},
       back_urls: {
   success: 'https://amdcfc.netlify.app',
   failure: 'https://amdcfc.netlify.app',
