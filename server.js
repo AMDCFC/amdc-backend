@@ -41,6 +41,16 @@ app.post('/criar-pedido', async (req, res) => {
 
     const preference = new Preference(client);
 
+    // Separa nome e sobrenome
+    const nomeParts = (nome || 'Cliente').trim().split(' ');
+    const firstName = nomeParts[0];
+    const lastName = nomeParts.slice(1).join(' ') || nomeParts[0];
+
+    // Formata telefone
+    const telLimpo = (telefone || '11999999999').replace(/\D/g, '');
+    const areaCode = parseInt(telLimpo.slice(0, 2)) || 11;
+    const telNumber = parseInt(telLimpo.slice(2)) || 999999999;
+
     // Monta os itens para o Mercado Pago
     const items = itens.map(item => ({
       id: item.nome.replace(/\s+/g, '_').toLowerCase(),
@@ -64,21 +74,36 @@ app.post('/criar-pedido', async (req, res) => {
     // Monta o corpo da preferência
     const body = {
       items,
-      payer: { 
-  area_code: telefone.replace(/\D/g,'').slice(0,2),
-  number: telefone.replace(/\D/g,'').slice(2)
-},
-        
+      payer: {
+        name: firstName,
+        surname: lastName,
+        email: email,
+        phone: {
+          area_code: areaCode,
+          number: telNumber
+        },
+        identification: {
+          type: 'CPF',
+          number: '19119119100'
+        },
+        address: {
+          zip_code: (cep || '01310100').replace(/\D/g, ''),
+          street_name: 'Nao informado',
+          street_number: '0',
+          neighborhood: 'Nao informado',
+          city: 'Sao Paulo',
+          federal_unit: 'SP'
+        }
+      },
       payment_methods: {
-  excluded_payment_types: [{ id: 'ticket' }],
-  installments: 12
-},
+        excluded_payment_types: [],
+        installments: pagamento === 'Crédito' ? (parcelas || 3) : 1
+      },
       back_urls: {
-  success: 'https://amdcfc.netlify.app',
-  failure: 'https://amdcfc.netlify.app',
-  pending: 'https://amdcfc.netlify.app'
-},
-   
+        success: 'https://amdcfc.netlify.app',
+        failure: 'https://amdcfc.netlify.app',
+        pending: 'https://amdcfc.netlify.app'
+      },
       auto_return: 'approved',
       statement_descriptor: 'AMDC FUTEBOL',
       external_reference: `AMDC-${numero}-${Date.now()}`,
