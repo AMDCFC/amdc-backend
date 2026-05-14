@@ -1,11 +1,11 @@
 {
-  "name": "amdc-backend",
+  "name": "backend-amdc",
   "version": "1.0.0",
   "description": "Backend AMDC Futebol Clube - Integração Mercado Pago",
-  "main": "server.js",
+  "main": "servidor.js",
   "scripts": {
-    "start": "node server.js",
-    "dev": "nodemon server.js"
+    "start": "node servidor.js",
+    "dev": "nodemon servidor.js"
   },
   "dependencies": {
     "cors": "^2.8.5",
