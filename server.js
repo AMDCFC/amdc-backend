@@ -4,53 +4,53 @@ const { MercadoPagoConfig, Preference } = require('mercadopago');
 const app = express();
 app.use(cors());
 app.use(express.json());
-
+ 
 // Configuração do Mercado Pago
 const client = new MercadoPagoConfig({
   accessToken: process.env.MP_ACCESS_TOKEN
 });
-
+ 
 // Cupons de desconto (edite aqui para adicionar/remover)
 const COUPONS = [
   { code: 'AMDC10', tipo: 'percent', desconto: 10, active: true },
   { code: 'AMDC20', tipo: 'percent', desconto: 20, active: true },
   { code: 'BITAR10', tipo: 'percent', desconto: 10, active: true },
 ];
-
+ 
 // Controle de vendas (mude salesPaused para true para pausar)
 const CONFIG = {
   salesPaused: false,
   pauseMessage: 'Voltamos em breve com novidades!',
   coupons: COUPONS
 };
-
+ 
 // Rota de teste
 app.get('/', (req, res) => {
   res.json({ status: 'AMDC Backend funcionando!' });
 });
-
+ 
 // Rota de configuração (cupons, pausar vendas)
 app.get('/config', (req, res) => {
   res.json(CONFIG);
 });
-
+ 
 // Rota para criar pedido — chamada pelo frontend no checkout
 app.post('/criar-pedido', async (req, res) => {
   try {
     const { numero, nome, telefone, email, itens, pagamento, parcelas, vendedor, cupom, cep, frete } = req.body;
-
+ 
     const preference = new Preference(client);
-
+ 
     // Separa nome e sobrenome
     const nomeParts = (nome || 'Cliente').trim().split(' ');
     const firstName = nomeParts[0];
     const lastName = nomeParts.slice(1).join(' ') || nomeParts[0];
-
+ 
     // Formata telefone
     const telLimpo = (telefone || '11999999999').replace(/\D/g, '');
     const areaCode = parseInt(telLimpo.slice(0, 2)) || 11;
     const telNumber = parseInt(telLimpo.slice(2)) || 999999999;
-
+ 
     // Monta os itens para o Mercado Pago
     const items = itens.map(item => ({
       id: item.nome.replace(/\s+/g, '_').toLowerCase(),
@@ -59,7 +59,7 @@ app.post('/criar-pedido', async (req, res) => {
       unit_price: parseFloat(item.preco),
       currency_id: 'BRL'
     }));
-
+ 
     // Adiciona frete como item se houver
     if (frete && frete.preco > 0) {
       items.push({
@@ -70,7 +70,7 @@ app.post('/criar-pedido', async (req, res) => {
         currency_id: 'BRL'
       });
     }
-
+ 
     // Monta o corpo da preferência
     const body = {
       items,
@@ -117,27 +117,27 @@ app.post('/criar-pedido', async (req, res) => {
         frete: frete ? frete.nome : null
       }
     };
-
+ 
     const result = await preference.create({ body });
-
+ 
     res.json({
       checkout_url: result.init_point,
       pedido_id: result.id,
       numero: numero
     });
-
+ 
   } catch (error) {
     console.error('Erro ao criar pedido:', error);
     res.status(500).json({ detail: 'Erro ao criar pedido: ' + error.message });
   }
 });
-
+ 
 // Webhook para receber notificações do MP
 app.post('/webhook', async (req, res) => {
   console.log('Webhook recebido:', JSON.stringify(req.body));
   res.sendStatus(200);
 });
-
+ 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`Servidor AMDC rodando na porta ${PORT}`);
