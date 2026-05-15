@@ -1,6 +1,8 @@
 const express = require('express');
 const cors = require('cors');
 const { MercadoPagoConfig, Preference, Payment } = require('mercadopago');
+const { createClient } = require('@supabase/supabase-js');
+
 const app = express();
 app.use(cors());
 app.use(express.json());
@@ -10,18 +12,20 @@ const client = new MercadoPagoConfig({
   accessToken: process.env.MP_ACCESS_TOKEN
 });
 
-// ── Armazenamento em memória ──────────────────────────────────────
-let pedidos = [];   // { numero, nome, email, telefone, itens, total, pagamento, parcelas, vendedor, cupom, cep, frete, status, dataHora, pedido_id }
-let contador = 1;   // contador de pedidos (reinicia com o servidor)
+// ── Supabase ──────────────────────────────────────────────────────
+const supabase = createClient(
+  process.env.SUPABASE_URL,
+  process.env.SUPABASE_KEY
+);
 
 // ── Cupons ────────────────────────────────────────────────────────
 const COUPONS = [
-  { code: 'AMDC10',   tipo: 'percent', desconto: 10, active: true },
-  { code: 'AMDC20',   tipo: 'percent', desconto: 20, active: true },
-  { code: 'BITAR10',  tipo: 'percent', desconto: 10, active: true },
+  { code: 'AMDC10',  tipo: 'percent', desconto: 10, active: true },
+  { code: 'AMDC20',  tipo: 'percent', desconto: 20, active: true },
+  { code: 'BITAR10', tipo: 'percent', desconto: 10, active: true },
 ];
 
-// ── Controle de vendas ────────────────────────────────────────────
+// ── Config ────────────────────────────────────────────────────────
 const CONFIG = {
   salesPaused: false,
   pauseMessage: 'Voltamos em breve com novidades!',
@@ -32,6 +36,13 @@ const CONFIG = {
 function padNum(n) { return String(n).padStart(4, '0'); }
 function nowBR() {
   return new Date().toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' });
+}
+
+async function proximoNumero() {
+  const { count } = await supabase
+    .from('pedidos')
+    .select('*', { count: 'exact', head: true });
+  return padNum((count || 0) + 1);
 }
 
 // ══════════════════════════════════════════════════════════════════
@@ -47,9 +58,7 @@ app.post('/criar-pedido', async (req, res) => {
   try {
     const { nome, telefone, email, itens, pagamento, parcelas, vendedor, cupom, cep, frete } = req.body;
 
-    // Número do pedido
-    const numero = padNum(contador++);
-
+    const numero = await proximoNumero();
     const preference = new Preference(client);
 
     const nomeParts = (nome || 'Cliente').trim().split(' ');
@@ -61,10 +70,10 @@ app.post('/criar-pedido', async (req, res) => {
     const telNumber = parseInt(telLimpo.slice(2))      || 999999999;
 
     const mpItems = itens.map(item => ({
-      id:         item.nome.replace(/\s+/g, '_').toLowerCase(),
-      title:      item.nome + (item.size ? ` (Tam: ${item.size})` : ''),
-      quantity:   1,
-      unit_price: parseFloat(item.preco),
+      id:          item.nome.replace(/\s+/g, '_').toLowerCase(),
+      title:       item.nome + (item.size ? ` (Tam: ${item.size})` : ''),
+      quantity:    1,
+      unit_price:  parseFloat(item.preco),
       currency_id: 'BRL'
     }));
 
@@ -120,30 +129,28 @@ app.post('/criar-pedido', async (req, res) => {
 
     const result = await preference.create({ body });
 
-    // Calcula total
     const totalNum = mpItems.reduce((s, i) => s + i.unit_price * i.quantity, 0);
     const totalStr = 'R$ ' + totalNum.toFixed(2).replace('.', ',');
 
-    // Salva pedido como PENDENTE
-    const pedido = {
+    // Salva no Supabase
+    const { error } = await supabase.from('pedidos').insert({
       numero,
       nome:      nome || 'Cliente',
       email:     email || '',
       telefone:  telefone || '',
-      itens:     itens.map(i => i.nome + (i.size ? ` (Tam: ${i.size})` : '')),
+      itens:     itens.map(i => i.nome + (i.size ? ` (Tam: ${i.size})` : '')).join(', '),
       total:     totalStr,
       pagamento: pagamento || '',
-      parcelas:  parcelas  || 1,
       vendedor:  vendedor  || 'Não informado',
       cupom:     cupom     || null,
       cep:       cep       || null,
       frete:     frete ? frete.nome : null,
       status:    'PENDENTE',
-      dataHora:  nowBR(),
-      pedido_id: result.id,
-      preference_id: result.id
-    };
-    pedidos.push(pedido);
+      data_hora: nowBR(),
+      pedido_id: result.id
+    });
+
+    if (error) console.error('Erro ao salvar no Supabase:', error);
 
     res.json({
       checkout_url: result.init_point,
@@ -160,32 +167,20 @@ app.post('/criar-pedido', async (req, res) => {
 // ── Webhook MP ────────────────────────────────────────────────────
 app.post('/webhook', async (req, res) => {
   try {
-    console.log('Webhook recebido:', JSON.stringify(req.body));
     const { type, data } = req.body;
-
     if (type === 'payment' && data?.id) {
       const payment = new Payment(client);
       const pag = await payment.get({ id: data.id });
-
-      console.log('Pagamento:', JSON.stringify(pag, null, 2));
-
       const extRef = pag.external_reference || '';
-      // external_reference = "AMDC-0001-timestamp"
       const match = extRef.match(/^AMDC-(\d+)-/);
       if (match) {
         const numero = match[1];
-        const pedido = pedidos.find(p => p.numero === numero);
-        if (pedido) {
-          if (pag.status === 'approved') {
-            pedido.status  = 'PAGO ✅';
-            pedido.statusAt = nowBR();
-          } else if (pag.status === 'rejected' || pag.status === 'cancelled') {
-            pedido.status  = 'Cancelado';
-            pedido.statusAt = nowBR();
-          } else if (pag.status === 'pending' || pag.status === 'in_process') {
-            pedido.status  = 'PENDENTE';
-          }
-          console.log(`Pedido ${numero} atualizado para: ${pedido.status}`);
+        let novoStatus = null;
+        if (pag.status === 'approved')                              novoStatus = 'PAGO ✅';
+        else if (pag.status === 'rejected' || pag.status === 'cancelled') novoStatus = 'Cancelado';
+        if (novoStatus) {
+          await supabase.from('pedidos').update({ status: novoStatus }).eq('numero', numero);
+          console.log(`Pedido ${numero} → ${novoStatus}`);
         }
       }
     }
@@ -198,8 +193,6 @@ app.post('/webhook', async (req, res) => {
 // ══════════════════════════════════════════════════════════════════
 // ROTAS DO ADMIN
 // ══════════════════════════════════════════════════════════════════
-
-// Autenticação simples via header
 const ADMIN_TOKEN = process.env.ADMIN_TOKEN || 'amdc-admin-2026';
 
 function authAdmin(req, res, next) {
@@ -208,31 +201,42 @@ function authAdmin(req, res, next) {
   next();
 }
 
-// GET /admin/pedidos — lista todos os pedidos
-app.get('/admin/pedidos', authAdmin, (req, res) => {
+// GET /admin/pedidos
+app.get('/admin/pedidos', authAdmin, async (req, res) => {
+  const { data, error } = await supabase
+    .from('pedidos')
+    .select('*')
+    .order('created_at', { ascending: true });
+  if (error) return res.status(500).json({ error: error.message });
+  // Converte itens de string para array
+  const pedidos = data.map(p => ({
+    ...p,
+    itens: p.itens ? p.itens.split(', ') : []
+  }));
   res.json(pedidos);
 });
 
-// PATCH /admin/pedidos/:numero/status — atualiza status manualmente
-app.patch('/admin/pedidos/:numero/status', authAdmin, (req, res) => {
+// PATCH /admin/pedidos/:numero/status
+app.patch('/admin/pedidos/:numero/status', authAdmin, async (req, res) => {
   const { numero } = req.params;
   const { status }  = req.body;
-  const pedido = pedidos.find(p => p.numero === numero);
-  if (!pedido) return res.status(404).json({ error: 'Pedido não encontrado' });
-  pedido.status   = status;
-  pedido.statusAt = nowBR();
-  res.json(pedido);
+  const { data, error } = await supabase
+    .from('pedidos')
+    .update({ status })
+    .eq('numero', numero)
+    .select()
+    .single();
+  if (error) return res.status(500).json({ error: error.message });
+  res.json(data);
 });
 
-// GET /admin/config — retorna config
-app.get('/admin/config', authAdmin, (req, res) => {
-  res.json(CONFIG);
-});
+// GET /admin/config
+app.get('/admin/config', authAdmin, (req, res) => res.json(CONFIG));
 
-// PATCH /admin/config — salva config (pausa, mensagem)
+// PATCH /admin/config
 app.patch('/admin/config', authAdmin, (req, res) => {
   const { salesPaused, pauseMessage } = req.body;
-  if (salesPaused !== undefined) CONFIG.salesPaused  = salesPaused;
+  if (salesPaused  !== undefined) CONFIG.salesPaused  = salesPaused;
   if (pauseMessage !== undefined) CONFIG.pauseMessage = pauseMessage;
   res.json(CONFIG);
 });
