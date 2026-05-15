@@ -1,18 +1,14 @@
 {
-  "name": "backend-amdc",
+  "name": "amdc-backend",
   "version": "1.0.0",
-  "description": "Backend AMDC Futebol Clube - Integração Mercado Pago",
-  "main": "servidor.js",
+  "main": "server.js",
   "scripts": {
-    "start": "node servidor.js",
-    "dev": "nodemon servidor.js"
+    "start": "node server.js"
   },
   "dependencies": {
     "cors": "^2.8.5",
     "express": "^4.18.2",
-    "mercadopago": "^2.0.6"
-  },
-  "engines": {
-    "node": ">=18.0.0"
+    "mercadopago": "^2.0.0",
+    "@supabase/supabase-js": "^2.39.0"
   }
 }
