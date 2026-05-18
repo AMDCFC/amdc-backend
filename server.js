@@ -18,19 +18,31 @@ const supabase = createClient(
   process.env.SUPABASE_KEY
 );
 
-// ── Cupons ────────────────────────────────────────────────────────
-const COUPONS = [
-  { code: 'AMDC10',  tipo: 'percent', desconto: 10, active: true },
-  { code: 'AMDC20',  tipo: 'percent', desconto: 20, active: true },
-  { code: 'BITAR10', tipo: 'percent', desconto: 10, active: true },
-];
-
-// ── Config ────────────────────────────────────────────────────────
-const CONFIG = {
+// ── Config (in-memory, persisted via Supabase) ────────────────────
+let CONFIG = {
   salesPaused: false,
   pauseMessage: 'Voltamos em breve com novidades!',
-  coupons: COUPONS
+  coupons: [
+    { code: 'AMDC10',  tipo: 'percent', desconto: 10, active: true, uses: 0, maxUses: null, expiry: null, owner: '' },
+    { code: 'AMDC20',  tipo: 'percent', desconto: 20, active: true, uses: 0, maxUses: null, expiry: null, owner: '' },
+    { code: 'BITAR10', tipo: 'percent', desconto: 10, active: true, uses: 0, maxUses: null, expiry: null, owner: '' },
+  ]
 };
+
+async function loadConfig() {
+  try {
+    const { data } = await supabase.from('amdc_config').select('data').eq('id', 1).single();
+    if (data?.data) CONFIG = data.data;
+  } catch (e) { /* usa default */ }
+}
+
+async function saveConfig() {
+  try {
+    await supabase.from('amdc_config').upsert({ id: 1, data: CONFIG });
+  } catch (e) { /* continua in-memory */ }
+}
+
+loadConfig();
 
 // ── Helpers ───────────────────────────────────────────────────────
 function padNum(n) { return String(n).padStart(4, '0'); }
@@ -51,12 +63,35 @@ async function proximoNumero() {
 
 app.get('/', (req, res) => res.json({ status: 'AMDC Backend funcionando!' }));
 
-app.get('/config', (req, res) => res.json(CONFIG));
+app.get('/config', (req, res) => res.json({
+  salesPaused: CONFIG.salesPaused,
+  pauseMessage: CONFIG.pauseMessage,
+  coupons: CONFIG.coupons
+}));
 
 // ── Criar pedido ──────────────────────────────────────────────────
 app.post('/criar-pedido', async (req, res) => {
   try {
-    const { nome, telefone, email, itens, pagamento, parcelas, vendedor, cupom, cep, frete } = req.body;
+    const { nome, telefone, email, itens, pagamento, parcelas, vendedor, cupom: cupomCode, cep, frete } = req.body;
+
+    if (CONFIG.salesPaused) return res.status(503).json({ detail: CONFIG.pauseMessage });
+
+    // Valida cupom
+    let cupomObj = null;
+    let desconto = 0;
+    if (cupomCode) {
+      cupomObj = CONFIG.coupons.find(c => c.code === cupomCode.toUpperCase() && c.active);
+      if (cupomObj) {
+        if (cupomObj.maxUses && cupomObj.uses >= cupomObj.maxUses) cupomObj = null;
+        if (cupomObj && cupomObj.expiry && new Date(cupomObj.expiry) < new Date()) cupomObj = null;
+      }
+      if (cupomObj) {
+        const subtotal = itens.reduce((s, i) => s + parseFloat(i.preco), 0);
+        desconto = cupomObj.tipo === 'percent'
+          ? Math.round(subtotal * cupomObj.desconto / 100 * 100) / 100
+          : Math.min(parseFloat(cupomObj.desconto), subtotal);
+      }
+    }
 
     const numero = await proximoNumero();
     const preference = new Preference(client);
@@ -69,11 +104,14 @@ app.post('/criar-pedido', async (req, res) => {
     const areaCode  = parseInt(telLimpo.slice(0, 2))  || 11;
     const telNumber = parseInt(telLimpo.slice(2))      || 999999999;
 
+    const subtotalItens = itens.reduce((s, i) => s + parseFloat(i.preco), 0);
+    const fator = desconto > 0 ? (subtotalItens - desconto) / subtotalItens : 1;
+
     const mpItems = itens.map(item => ({
       id:          item.nome.replace(/\s+/g, '_').toLowerCase(),
       title:       item.nome + (item.size ? ` (Tam: ${item.size})` : ''),
       quantity:    1,
-      unit_price:  parseFloat(item.preco),
+      unit_price:  Math.round(parseFloat(item.preco) * fator * 100) / 100,
       currency_id: 'BRL'
     }));
 
@@ -120,7 +158,7 @@ app.post('/criar-pedido', async (req, res) => {
       metadata: {
         numero_pedido: numero,
         vendedor:      vendedor || 'Não informado',
-        cupom:         cupom    || null,
+        cupom:         cupomObj ? cupomObj.code : null,
         forma_pagamento: pagamento,
         cep:           cep      || null,
         frete:         frete ? frete.nome : null
@@ -132,17 +170,19 @@ app.post('/criar-pedido', async (req, res) => {
     const totalNum = mpItems.reduce((s, i) => s + i.unit_price * i.quantity, 0);
     const totalStr = 'R$ ' + totalNum.toFixed(2).replace('.', ',');
 
-    // Salva no Supabase
     const { error } = await supabase.from('pedidos').insert({
       numero,
       nome:      nome || 'Cliente',
       email:     email || '',
       telefone:  telefone || '',
       itens:     itens.map(i => i.nome + (i.size ? ` (Tam: ${i.size})` : '')).join(', '),
+      subtotal:  'R$ ' + subtotalItens.toFixed(2).replace('.', ','),
+      desconto:  desconto > 0 ? 'R$ ' + desconto.toFixed(2).replace('.', ',') : null,
       total:     totalStr,
       pagamento: pagamento || '',
+      parcelas:  parcelas || 1,
       vendedor:  vendedor  || 'Não informado',
-      cupom:     cupom     || null,
+      cupom:     cupomObj ? cupomObj.code : null,
       cep:       cep       || null,
       frete:     frete ? frete.nome : null,
       status:    'PENDENTE',
@@ -151,6 +191,15 @@ app.post('/criar-pedido', async (req, res) => {
     });
 
     if (error) console.error('Erro ao salvar no Supabase:', error);
+
+    // Incrementa uso do cupom
+    if (cupomObj) {
+      const idx = CONFIG.coupons.findIndex(c => c.code === cupomObj.code);
+      if (idx >= 0) {
+        CONFIG.coupons[idx].uses = (CONFIG.coupons[idx].uses || 0) + 1;
+        saveConfig();
+      }
+    }
 
     res.json({
       checkout_url: result.init_point,
@@ -176,8 +225,8 @@ app.post('/webhook', async (req, res) => {
       if (match) {
         const numero = match[1];
         let novoStatus = null;
-        if (pag.status === 'approved')                              novoStatus = 'PAGO ✅';
-        else if (pag.status === 'rejected' || pag.status === 'cancelled') novoStatus = 'Cancelado';
+        if (pag.status === 'approved')                                        novoStatus = 'PAGO ✅';
+        else if (pag.status === 'rejected' || pag.status === 'cancelled')     novoStatus = 'Cancelado';
         if (novoStatus) {
           await supabase.from('pedidos').update({ status: novoStatus }).eq('numero', numero);
           console.log(`Pedido ${numero} → ${novoStatus}`);
@@ -201,14 +250,20 @@ function authAdmin(req, res, next) {
   next();
 }
 
+// POST /admin/login
+app.post('/admin/login', (req, res) => {
+  const token = req.body.token || req.headers['x-admin-token'];
+  if (token !== ADMIN_TOKEN) return res.status(401).json({ ok: false, detail: 'Token incorreto' });
+  res.json({ ok: true, token: ADMIN_TOKEN });
+});
+
 // GET /admin/pedidos
 app.get('/admin/pedidos', authAdmin, async (req, res) => {
   const { data, error } = await supabase
     .from('pedidos')
     .select('*')
-    .order('created_at', { ascending: true });
+    .order('created_at', { ascending: false });
   if (error) return res.status(500).json({ error: error.message });
-  // Converte itens de string para array
   const pedidos = data.map(p => ({
     ...p,
     itens: p.itens ? p.itens.split(', ') : []
@@ -234,11 +289,52 @@ app.patch('/admin/pedidos/:numero/status', authAdmin, async (req, res) => {
 app.get('/admin/config', authAdmin, (req, res) => res.json(CONFIG));
 
 // PATCH /admin/config
-app.patch('/admin/config', authAdmin, (req, res) => {
+app.patch('/admin/config', authAdmin, async (req, res) => {
   const { salesPaused, pauseMessage } = req.body;
   if (salesPaused  !== undefined) CONFIG.salesPaused  = salesPaused;
   if (pauseMessage !== undefined) CONFIG.pauseMessage = pauseMessage;
+  await saveConfig();
   res.json(CONFIG);
+});
+
+// GET /admin/cupons
+app.get('/admin/cupons', authAdmin, (req, res) => {
+  res.json(CONFIG.coupons);
+});
+
+// POST /admin/cupom  (cria ou atualiza)
+app.post('/admin/cupom', authAdmin, async (req, res) => {
+  const code = req.body.code?.trim().toUpperCase();
+  if (!code) return res.status(400).json({ detail: 'Código inválido' });
+  const obj = { ...req.body, code };
+  const idx = CONFIG.coupons.findIndex(c => c.code === code);
+  if (idx >= 0) {
+    obj.uses = CONFIG.coupons[idx].uses || 0;
+    CONFIG.coupons[idx] = obj;
+  } else {
+    obj.uses = 0;
+    CONFIG.coupons.push(obj);
+  }
+  await saveConfig();
+  res.json({ ok: true });
+});
+
+// DELETE /admin/cupom/:code
+app.delete('/admin/cupom/:code', authAdmin, async (req, res) => {
+  const code = req.params.code.toUpperCase();
+  CONFIG.coupons = CONFIG.coupons.filter(c => c.code !== code);
+  await saveConfig();
+  res.json({ ok: true });
+});
+
+// PATCH /admin/cupom/:code/toggle
+app.patch('/admin/cupom/:code/toggle', authAdmin, async (req, res) => {
+  const code = req.params.code.toUpperCase();
+  const c = CONFIG.coupons.find(c => c.code === code);
+  if (!c) return res.status(404).json({ detail: 'Cupom não encontrado' });
+  c.active = !c.active;
+  await saveConfig();
+  res.json({ ok: true, active: c.active });
 });
 
 // ── Start ─────────────────────────────────────────────────────────
