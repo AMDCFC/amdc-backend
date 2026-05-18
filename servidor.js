@@ -1,0 +1,149 @@
+const express = require('express');
+const cors = require('cors');
+const fs = require('fs');
+const { MercadoPagoConfig, Preference } = require('mercadopago');
+const app = express();
+app.use(cors());
+app.use(express.json());
+
+// ── Contador de visitas ──────────────────────────────────────────
+const VISITS_FILE = 'amdc_visits.json';
+function loadVisits() {
+  try { if (fs.existsSync(VISITS_FILE)) return JSON.parse(fs.readFileSync(VISITS_FILE,'utf-8')); } catch(e){}
+  return { total: 0, unicas: 0, sessions: [] };
+}
+function saveVisits(v) {
+  try { fs.writeFileSync(VISITS_FILE, JSON.stringify(v)); } catch(e){}
+}
+
+// Configuração do Mercado Pago
+const client = new MercadoPagoConfig({
+  accessToken: process.env.MP_ACCESS_TOKEN
+});
+
+// Cupons de desconto (edite aqui para adicionar/remover)
+const COUPONS = [
+  { code: 'AMDC10', tipo: 'percent', desconto: 10, active: true },
+  { code: 'AMDC20', tipo: 'percent', desconto: 20, active: true },
+  { code: 'BITAR10', tipo: 'percent', desconto: 10, active: true },
+];
+
+// Controle de vendas (mude salesPaused para true para pausar)
+const CONFIG = {
+  salesPaused: false,
+  pauseMessage: 'Voltamos em breve com novidades!',
+  coupons: COUPONS
+};
+
+// Rota de teste
+app.get('/', (req, res) => {
+  res.json({ status: 'AMDC Backend funcionando!' });
+});
+
+// Registra visita (chamado pelo index.html)
+app.post('/visita', (req, res) => {
+  const { session_id } = req.body || {};
+  const v = loadVisits();
+  v.total = (v.total || 0) + 1;
+  if (session_id && !v.sessions.includes(session_id)) {
+    v.unicas = (v.unicas || 0) + 1;
+    v.sessions.push(session_id);
+    if (v.sessions.length > 10000) v.sessions = v.sessions.slice(-10000);
+  }
+  saveVisits(v);
+  res.json({ ok: true });
+});
+
+// Retorna contagem de visitas (painel admin)
+app.get('/admin/visitas', (req, res) => {
+  const v = loadVisits();
+  res.json({ total: v.total || 0, unicas: v.unicas || 0 });
+});
+
+// Rota de configuração (cupons, pausar vendas)
+app.get('/config', (req, res) => {
+  res.json(CONFIG);
+});
+
+// Rota para criar pedido — chamada pelo frontend no checkout
+app.post('/criar-pedido', async (req, res) => {
+  try {
+    const { numero, nome, telefone, email, itens, pagamento, parcelas, vendedor, cupom, cep, frete } = req.body;
+
+    const preference = new Preference(client);
+
+    // Monta os itens para o Mercado Pago
+    const items = itens.map(item => ({
+      id: item.nome.replace(/\s+/g, '_').toLowerCase(),
+      title: item.nome + (item.size ? ` (Tam: ${item.size})` : ''),
+      quantity: 1,
+      unit_price: parseFloat(item.preco),
+      currency_id: 'BRL'
+    }));
+
+    // Adiciona frete como item se houver
+    if (frete && frete.preco > 0) {
+      items.push({
+        id: 'frete',
+        title: `Frete - ${frete.nome}`,
+        quantity: 1,
+        unit_price: parseFloat(frete.preco),
+        currency_id: 'BRL'
+      });
+    }
+
+    // Monta o corpo da preferência
+    const body = {
+      items,
+      payer: {
+        name: nome,
+        email: email,
+        phone: { number: telefone }
+      },
+      payment_methods: {
+        excluded_payment_types: [],
+        installments: pagamento === 'Crédito' ? (parcelas || 3) : 1
+      },
+      back_urls: {
+        success: 'https://amdc-loja.netlify.app/sucesso.html',
+        failure: 'https://amdc-loja.netlify.app/erro.html',
+        pending: 'https://amdc-loja.netlify.app/pendente.html'
+      },
+      auto_return: 'approved',
+      statement_descriptor: 'AMDC FUTEBOL',
+      external_reference: `AMDC-${numero}-${Date.now()}`,
+      notification_url: `${process.env.RENDER_URL}/webhook`,
+      metadata: {
+        numero_pedido: numero,
+        vendedor: vendedor || 'Não informado',
+        cupom: cupom || null,
+        forma_pagamento: pagamento,
+        cep: cep || null,
+        frete: frete ? frete.nome : null
+      }
+    };
+
+    const result = await preference.create({ body });
+
+    res.json({
+      checkout_url: result.init_point,
+      pedido_id: result.id,
+      numero: numero
+    });
+
+  } catch (error) {
+    console.error('Erro ao criar pedido:', error);
+    res.status(500).json({ detail: 'Erro ao criar pedido: ' + error.message });
+  }
+});
+
+// Webhook para receber notificações do MP
+app.post('/webhook', async (req, res) => {
+  console.log('Webhook recebido:', JSON.stringify(req.body));
+  res.sendStatus(200);
+});
+
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+  console.log(`Servidor AMDC rodando na porta ${PORT}`);
+});
