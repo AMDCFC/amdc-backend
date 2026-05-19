@@ -26,13 +26,17 @@ let CONFIG = {
     { code: 'AMDC10',  tipo: 'percent', desconto: 10, active: true, uses: 0, maxUses: null, expiry: null, owner: '' },
     { code: 'AMDC20',  tipo: 'percent', desconto: 20, active: true, uses: 0, maxUses: null, expiry: null, owner: '' },
     { code: 'BITAR10', tipo: 'percent', desconto: 10, active: true, uses: 0, maxUses: null, expiry: null, owner: '' },
-  ]
+  ],
+  visits: { total: 0, unicas: 0, sessions: [] }
 };
 
 async function loadConfig() {
   try {
     const { data } = await supabase.from('amdc_config').select('data').eq('id', 1).single();
-    if (data?.data) CONFIG = data.data;
+    if (data?.data) {
+      CONFIG = data.data;
+      if (!CONFIG.visits) CONFIG.visits = { total: 0, unicas: 0, sessions: [] };
+    }
   } catch (e) { /* usa default */ }
 }
 
@@ -239,6 +243,20 @@ app.post('/webhook', async (req, res) => {
   res.sendStatus(200);
 });
 
+// ── Visitas ───────────────────────────────────────────────────────
+app.post('/visita', async (req, res) => {
+  const sid = (req.body || {}).sessionId || (req.body || {}).session_id;
+  if (!CONFIG.visits) CONFIG.visits = { total: 0, unicas: 0, sessions: [] };
+  CONFIG.visits.total += 1;
+  if (sid && !CONFIG.visits.sessions.includes(sid)) {
+    CONFIG.visits.unicas += 1;
+    CONFIG.visits.sessions.push(sid);
+    if (CONFIG.visits.sessions.length > 5000) CONFIG.visits.sessions = CONFIG.visits.sessions.slice(-5000);
+  }
+  saveConfig();
+  res.json({ ok: true });
+});
+
 // ══════════════════════════════════════════════════════════════════
 // ROTAS DO ADMIN
 // ══════════════════════════════════════════════════════════════════
@@ -249,6 +267,12 @@ function authAdmin(req, res, next) {
   if (token !== ADMIN_TOKEN) return res.status(401).json({ error: 'Não autorizado' });
   next();
 }
+
+// GET /admin/visitas
+app.get('/admin/visitas', authAdmin, (req, res) => {
+  const v = CONFIG.visits || { total: 0, unicas: 0 };
+  res.json({ total: v.total, unicas: v.unicas });
+});
 
 // POST /admin/login
 app.post('/admin/login', (req, res) => {
