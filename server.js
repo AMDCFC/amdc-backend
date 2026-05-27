@@ -2,6 +2,7 @@ const express = require('express');
 const cors = require('cors');
 const { MercadoPagoConfig, Preference, Payment } = require('mercadopago');
 const { createClient } = require('@supabase/supabase-js');
+const { google } = require('googleapis');
 
 const app = express();
 app.use(cors());
@@ -17,6 +18,88 @@ const supabase = createClient(
   process.env.SUPABASE_URL,
   process.env.SUPABASE_KEY
 );
+
+// ── Google Sheets ──────────────────────────────────────────────────
+const SHEET_ID = process.env.GOOGLE_SHEET_ID;
+const SHEET_HEADERS = [
+  'Nº Pedido','Data/Hora','Nome','Telefone','Email',
+  'Itens','Subtotal','Desconto','Frete','Total',
+  'Pagamento','Parcelas','Cupom','Vendedor','CEP','Status'
+];
+
+let _sheetsClient = null;
+function getSheets() {
+  if (_sheetsClient) return _sheetsClient;
+  try {
+    const creds = JSON.parse(process.env.GOOGLE_CREDENTIALS || '{}');
+    if (!creds.client_email) return null;
+    const auth = new google.auth.GoogleAuth({
+      credentials: creds,
+      scopes: ['https://www.googleapis.com/auth/spreadsheets']
+    });
+    _sheetsClient = google.sheets({ version: 'v4', auth });
+  } catch (e) {
+    console.error('Google Sheets init error:', e.message);
+  }
+  return _sheetsClient;
+}
+
+async function initSheetHeaders() {
+  if (!SHEET_ID) return;
+  try {
+    const sheets = getSheets();
+    if (!sheets) return;
+    const res = await sheets.spreadsheets.values.get({ spreadsheetId: SHEET_ID, range: 'A1' });
+    if (!res.data.values || !res.data.values[0] || !res.data.values[0][0]) {
+      await sheets.spreadsheets.values.update({
+        spreadsheetId: SHEET_ID,
+        range: 'A1',
+        valueInputOption: 'USER_ENTERED',
+        requestBody: { values: [SHEET_HEADERS] }
+      });
+      console.log('Google Sheets: cabeçalhos criados');
+    }
+  } catch (e) {
+    console.error('Google Sheets initHeaders error:', e.message);
+  }
+}
+
+async function appendToSheet(row) {
+  if (!SHEET_ID) return;
+  try {
+    const sheets = getSheets();
+    if (!sheets) return;
+    await sheets.spreadsheets.values.append({
+      spreadsheetId: SHEET_ID,
+      range: 'A:P',
+      valueInputOption: 'USER_ENTERED',
+      requestBody: { values: [row] }
+    });
+  } catch (e) {
+    console.error('Google Sheets append error:', e.message);
+  }
+}
+
+async function updateSheetStatus(numero, novoStatus) {
+  if (!SHEET_ID) return;
+  try {
+    const sheets = getSheets();
+    if (!sheets) return;
+    const res = await sheets.spreadsheets.values.get({ spreadsheetId: SHEET_ID, range: 'A:A' });
+    const rows = res.data.values || [];
+    const rowIndex = rows.findIndex(r => r[0] === String(numero));
+    if (rowIndex < 0) return;
+    await sheets.spreadsheets.values.update({
+      spreadsheetId: SHEET_ID,
+      range: `P${rowIndex + 1}`,
+      valueInputOption: 'USER_ENTERED',
+      requestBody: { values: [[novoStatus]] }
+    });
+    console.log(`Google Sheets: pedido ${numero} → ${novoStatus}`);
+  } catch (e) {
+    console.error('Google Sheets updateStatus error:', e.message);
+  }
+}
 
 // ── Config (in-memory, persisted via Supabase) ────────────────────
 let CONFIG = {
@@ -47,6 +130,7 @@ async function saveConfig() {
 }
 
 loadConfig();
+initSheetHeaders();
 
 // ── Helpers ───────────────────────────────────────────────────────
 function padNum(n) { return String(n).padStart(4, '0'); }
@@ -196,6 +280,27 @@ app.post('/criar-pedido', async (req, res) => {
 
     if (error) console.error('Erro ao salvar no Supabase:', error);
 
+    // Salvar no Google Sheets
+    const itensStr = itens.map(i => i.nome + (i.size ? ` (Tam: ${i.size})` : '')).join(', ');
+    appendToSheet([
+      numero,
+      nowBR(),
+      nome || 'Cliente',
+      telefone || '',
+      email || '',
+      itensStr,
+      'R$ ' + subtotalItens.toFixed(2).replace('.', ','),
+      desconto > 0 ? 'R$ ' + desconto.toFixed(2).replace('.', ',') : '-',
+      frete ? `${frete.nome} R$${parseFloat(frete.preco).toFixed(2).replace('.', ',')}` : '-',
+      totalStr,
+      pagamento || '',
+      parcelas || 1,
+      cupomObj ? cupomObj.code : '-',
+      vendedor || 'Não informado',
+      cep || '-',
+      'PENDENTE'
+    ]);
+
     // Incrementa uso do cupom
     if (cupomObj) {
       const idx = CONFIG.coupons.findIndex(c => c.code === cupomObj.code);
@@ -233,6 +338,7 @@ app.post('/webhook', async (req, res) => {
         else if (pag.status === 'rejected' || pag.status === 'cancelled')     novoStatus = 'Cancelado';
         if (novoStatus) {
           await supabase.from('pedidos').update({ status: novoStatus }).eq('numero', numero);
+          updateSheetStatus(numero, novoStatus);
           console.log(`Pedido ${numero} → ${novoStatus}`);
         }
       }
