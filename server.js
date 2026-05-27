@@ -31,8 +31,11 @@ let _sheetsClient = null;
 function getSheets() {
   if (_sheetsClient) return _sheetsClient;
   try {
-    const creds = JSON.parse(process.env.GOOGLE_CREDENTIALS || '{}');
-    if (!creds.client_email) return null;
+    const raw = process.env.GOOGLE_CREDENTIALS || '';
+    if (!raw) { console.warn('Google Sheets: GOOGLE_CREDENTIALS não definido'); return null; }
+    const creds = JSON.parse(raw);
+    if (!creds.client_email) { console.warn('Google Sheets: client_email não encontrado nas credenciais'); return null; }
+    console.log('Google Sheets: credenciais carregadas para', creds.client_email);
     const auth = new google.auth.GoogleAuth({
       credentials: creds,
       scopes: ['https://www.googleapis.com/auth/spreadsheets']
