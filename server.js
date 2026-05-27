@@ -22,9 +22,11 @@ const supabase = createClient(
 // ── Google Sheets ──────────────────────────────────────────────────
 const SHEET_ID = process.env.GOOGLE_SHEET_ID;
 const SHEET_HEADERS = [
-  'Nº Pedido','Data/Hora','Nome','Telefone','Email',
-  'Itens','Subtotal','Frete','Total',
-  'Pagamento','Parcelas','Cupom','Vendedor','CEP','Camiseta','Status'
+  'Nº Pedido','Data/Hora','Status',
+  'Nome','Telefone','Email','CEP',
+  'Itens','Nome Camiseta','Nº Camiseta',
+  'Pagamento','Parcelas','Cupom','Vendedor',
+  'Frete','Subtotal','Total'
 ];
 
 let _sheetsClient = null;
@@ -90,13 +92,20 @@ async function updateSheetStatus(numero, novoStatus) {
   try {
     const sheets = getSheets();
     if (!sheets) return;
+    // Descobre a coluna Status dinamicamente
+    const headRes = await sheets.spreadsheets.values.get({ spreadsheetId: SHEET_ID, range: '1:1' });
+    const headers = (headRes.data.values && headRes.data.values[0]) || [];
+    const statusCol = headers.indexOf('Status');
+    if (statusCol < 0) { console.warn('Coluna Status não encontrada'); return; }
+    const colLetter = String.fromCharCode(65 + statusCol);
+
     const res = await sheets.spreadsheets.values.get({ spreadsheetId: SHEET_ID, range: 'A:A' });
     const rows = res.data.values || [];
     const rowIndex = rows.findIndex(r => r[0] === String(numero));
     if (rowIndex < 0) return;
     await sheets.spreadsheets.values.update({
       spreadsheetId: SHEET_ID,
-      range: `P${rowIndex + 1}`,
+      range: `${colLetter}${rowIndex + 1}`,
       valueInputOption: 'USER_ENTERED',
       requestBody: { values: [[novoStatus]] }
     });
@@ -290,27 +299,27 @@ app.post('/criar-pedido', async (req, res) => {
     if (error) console.error('Erro ao salvar no Supabase:', error);
 
     // Salvar no Google Sheets
-    const itensStr = itens.map(i => i.nome + (i.size ? ` (Tam: ${i.size})` : '')).join(', ');
-    const nCam = itens.map(i => i.nomeCamisa).filter(Boolean).join(', ');
-    const rCam = itens.map(i => i.numeroCamisa).filter(Boolean).join(', ');
-    const camisetaStr = nCam && rCam ? `${nCam} | Nº ${rCam}` : nCam || (rCam ? `Nº ${rCam}` : '-');
+    const itensStr  = itens.map(i => i.nome + (i.size ? ` (Tam: ${i.size})` : '')).join(', ');
+    const nCam      = itens.map(i => i.nomeCamisa).filter(Boolean).join(', ') || '-';
+    const rCam      = itens.map(i => i.numeroCamisa).filter(Boolean).join(', ') || '-';
     appendToSheet([
-      numero,
-      nowBR(),
-      nome || 'Cliente',
-      telefone || '',
-      email || '',
-      itensStr,
-      'R$ ' + subtotalItens.toFixed(2).replace('.', ','),
-      frete ? `${frete.nome} R$${parseFloat(frete.preco).toFixed(2).replace('.', ',')}` : '-',
-      totalStr,
-      pagamento || '',
-      parcelas || 1,
-      cupomObj ? cupomObj.code : '-',
-      vendedor || 'Não informado',
-      cep || '-',
-      camisetaStr,
-      'PENDENTE'
+      numero,                                                                    // A Nº Pedido
+      nowBR(),                                                                   // B Data/Hora
+      'PENDENTE',                                                                // C Status
+      nome       || 'Cliente',                                                   // D Nome
+      telefone   || '',                                                          // E Telefone
+      email      || '',                                                          // F Email
+      cep        || '-',                                                         // G CEP
+      itensStr,                                                                  // H Itens
+      nCam,                                                                      // I Nome Camiseta
+      rCam,                                                                      // J Nº Camiseta
+      pagamento  || '',                                                          // K Pagamento
+      parcelas   || 1,                                                           // L Parcelas
+      cupomObj ? cupomObj.code : '-',                                            // M Cupom
+      vendedor   || 'Não informado',                                             // N Vendedor
+      frete ? `${frete.nome} R$${parseFloat(frete.preco).toFixed(2).replace('.', ',')}` : '-', // O Frete
+      'R$ ' + subtotalItens.toFixed(2).replace('.', ','),                        // P Subtotal
+      totalStr,                                                                  // Q Total
     ]);
 
     // Incrementa uso do cupom
