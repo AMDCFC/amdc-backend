@@ -23,9 +23,8 @@ const supabase = createClient(
 const SHEET_ID = process.env.GOOGLE_SHEET_ID;
 const SHEET_HEADERS = [
   'Nº Pedido','Data/Hora','Nome','Telefone','Email',
-  'Itens','Subtotal','Desconto','Frete','Total',
-  'Pagamento','Parcelas','Cupom','Vendedor','CEP','Status',
-  'Nome Camiseta','Nº Camiseta'
+  'Itens','Subtotal','Frete','Total',
+  'Pagamento','Parcelas','Cupom','Vendedor','CEP','Camiseta','Status'
 ];
 
 let _sheetsClient = null;
@@ -54,7 +53,7 @@ async function initSheetHeaders() {
   try {
     const sheets = getSheets();
     if (!sheets) return;
-    const res = await sheets.spreadsheets.values.get({ spreadsheetId: SHEET_ID, range: 'A1:R1' });
+    const res = await sheets.spreadsheets.values.get({ spreadsheetId: SHEET_ID, range: 'A1:P1' });
     const row = (res.data.values && res.data.values[0]) || [];
     if (!row[0]) {
       await sheets.spreadsheets.values.update({
@@ -64,14 +63,6 @@ async function initSheetHeaders() {
         requestBody: { values: [SHEET_HEADERS] }
       });
       console.log('Google Sheets: cabeçalhos criados');
-    } else if (!row[16]) {
-      await sheets.spreadsheets.values.update({
-        spreadsheetId: SHEET_ID,
-        range: 'Q1:R1',
-        valueInputOption: 'USER_ENTERED',
-        requestBody: { values: [['Nome Camiseta', 'Nº Camiseta']] }
-      });
-      console.log('Google Sheets: novas colunas Q e R adicionadas');
     }
   } catch (e) {
     console.error('Google Sheets initHeaders error:', e.message);
@@ -85,7 +76,7 @@ async function appendToSheet(row) {
     if (!sheets) return;
     await sheets.spreadsheets.values.append({
       spreadsheetId: SHEET_ID,
-      range: 'A:R',
+      range: 'A:P',
       valueInputOption: 'USER_ENTERED',
       requestBody: { values: [row] }
     });
@@ -300,8 +291,9 @@ app.post('/criar-pedido', async (req, res) => {
 
     // Salvar no Google Sheets
     const itensStr = itens.map(i => i.nome + (i.size ? ` (Tam: ${i.size})` : '')).join(', ');
-    const nomeCamisa = itens.map(i => i.nomeCamisa).filter(Boolean).join(', ') || '-';
-    const numeroCamisa = itens.map(i => i.numeroCamisa).filter(Boolean).join(', ') || '-';
+    const nCam = itens.map(i => i.nomeCamisa).filter(Boolean).join(', ');
+    const rCam = itens.map(i => i.numeroCamisa).filter(Boolean).join(', ');
+    const camisetaStr = nCam && rCam ? `${nCam} | Nº ${rCam}` : nCam || (rCam ? `Nº ${rCam}` : '-');
     appendToSheet([
       numero,
       nowBR(),
@@ -310,7 +302,6 @@ app.post('/criar-pedido', async (req, res) => {
       email || '',
       itensStr,
       'R$ ' + subtotalItens.toFixed(2).replace('.', ','),
-      desconto > 0 ? 'R$ ' + desconto.toFixed(2).replace('.', ',') : '-',
       frete ? `${frete.nome} R$${parseFloat(frete.preco).toFixed(2).replace('.', ',')}` : '-',
       totalStr,
       pagamento || '',
@@ -318,9 +309,8 @@ app.post('/criar-pedido', async (req, res) => {
       cupomObj ? cupomObj.code : '-',
       vendedor || 'Não informado',
       cep || '-',
-      'PENDENTE',
-      nomeCamisa,
-      numeroCamisa
+      camisetaStr,
+      'PENDENTE'
     ]);
 
     // Incrementa uso do cupom
