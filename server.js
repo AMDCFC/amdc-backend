@@ -24,7 +24,8 @@ const SHEET_ID = process.env.GOOGLE_SHEET_ID;
 const SHEET_HEADERS = [
   'Nº Pedido','Data/Hora','Nome','Telefone','Email',
   'Itens','Subtotal','Desconto','Frete','Total',
-  'Pagamento','Parcelas','Cupom','Vendedor','CEP','Status'
+  'Pagamento','Parcelas','Cupom','Vendedor','CEP','Status',
+  'Nome Camiseta','Nº Camiseta'
 ];
 
 let _sheetsClient = null;
@@ -53,8 +54,9 @@ async function initSheetHeaders() {
   try {
     const sheets = getSheets();
     if (!sheets) return;
-    const res = await sheets.spreadsheets.values.get({ spreadsheetId: SHEET_ID, range: 'A1' });
-    if (!res.data.values || !res.data.values[0] || !res.data.values[0][0]) {
+    const res = await sheets.spreadsheets.values.get({ spreadsheetId: SHEET_ID, range: 'A1:R1' });
+    const row = (res.data.values && res.data.values[0]) || [];
+    if (!row[0]) {
       await sheets.spreadsheets.values.update({
         spreadsheetId: SHEET_ID,
         range: 'A1',
@@ -62,6 +64,14 @@ async function initSheetHeaders() {
         requestBody: { values: [SHEET_HEADERS] }
       });
       console.log('Google Sheets: cabeçalhos criados');
+    } else if (!row[16]) {
+      await sheets.spreadsheets.values.update({
+        spreadsheetId: SHEET_ID,
+        range: 'Q1:R1',
+        valueInputOption: 'USER_ENTERED',
+        requestBody: { values: [['Nome Camiseta', 'Nº Camiseta']] }
+      });
+      console.log('Google Sheets: novas colunas Q e R adicionadas');
     }
   } catch (e) {
     console.error('Google Sheets initHeaders error:', e.message);
@@ -75,7 +85,7 @@ async function appendToSheet(row) {
     if (!sheets) return;
     await sheets.spreadsheets.values.append({
       spreadsheetId: SHEET_ID,
-      range: 'A:P',
+      range: 'A:R',
       valueInputOption: 'USER_ENTERED',
       requestBody: { values: [row] }
     });
@@ -290,6 +300,8 @@ app.post('/criar-pedido', async (req, res) => {
 
     // Salvar no Google Sheets
     const itensStr = itens.map(i => i.nome + (i.size ? ` (Tam: ${i.size})` : '')).join(', ');
+    const nomeCamisa = itens.map(i => i.nomeCamisa).filter(Boolean).join(', ') || '-';
+    const numeroCamisa = itens.map(i => i.numeroCamisa).filter(Boolean).join(', ') || '-';
     appendToSheet([
       numero,
       nowBR(),
@@ -306,7 +318,9 @@ app.post('/criar-pedido', async (req, res) => {
       cupomObj ? cupomObj.code : '-',
       vendedor || 'Não informado',
       cep || '-',
-      'PENDENTE'
+      'PENDENTE',
+      nomeCamisa,
+      numeroCamisa
     ]);
 
     // Incrementa uso do cupom
