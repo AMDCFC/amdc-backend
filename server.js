@@ -133,6 +133,10 @@ async function saveConfig() {
 }
 
 loadConfig();
+
+console.log('[Sheets] GOOGLE_SHEET_ID:', SHEET_ID ? 'definido ✅' : 'NÃO DEFINIDO ❌');
+console.log('[Sheets] GOOGLE_CREDENTIALS:', process.env.GOOGLE_CREDENTIALS ? 'definido ✅' : 'NÃO DEFINIDO ❌');
+
 initSheetHeaders();
 
 // ── Helpers ───────────────────────────────────────────────────────
